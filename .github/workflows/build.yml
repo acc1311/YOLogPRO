@@ -1,0 +1,309 @@
+name: Build YO Log PRO v19
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      version_suffix:
+        description: "Sufix optional (ex: beta1, rc1)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # JOB 1: Teste sintaxa + unitare pe Linux (rapid, fara cozi)
+  # ══════════════════════════════════════════════════════════════════════════
+  test:
+    name: Teste Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Compilare sintaxa Python
+        run: |
+          find . -name "*.py" -not -path "./.git/*" | while read f; do
+            python -m py_compile "$f" && echo "OK: $f"
+          done
+          echo "=== Sintaxa OK ==="
+
+      - name: Pyflakes
+        run: |
+          pip install --quiet pyflakes
+          python -m pyflakes yolog/core/ yolog/data/ yolog/export/ yolog/network/ || true
+
+      - name: Teste unitare
+        run: |
+          python -c "
+          import sys, os
+          sys.path.insert(0, os.path.abspath('.'))
+          from yolog.core.score import Score
+          from yolog.core.dxcc import DXCC
+          from yolog.core.locator import Loc
+          from yolog.core.bands import freq2band, band2freq
+          from yolog.data.importer import Importer
+          from yolog.export.exporters import CabrilloExporter, ADIFExporter
+
+          assert DXCC.lookup('YO8ACR')[0] == 'Romania', 'DXCC YO fail'
+          assert DXCC.lookup('DL1ABC')[0] == 'Germany', 'DXCC DL fail'
+          assert freq2band(14200) == '20m', 'band 20m fail'
+          assert freq2band(7100)  == '40m', 'band 40m fail'
+          assert freq2band(144000) == '2m', 'band 2m fail'
+          assert band2freq('40m') == 7100, 'band2freq fail'
+          assert Loc.valid('KN37'), 'locator valid fail'
+          assert not Loc.valid('ZZ99'), 'locator invalid fail'
+          assert Loc.dist('KN37','KN46') > 100, 'locator dist fail'
+
+          rules = {
+            'scoring_mode': 'per_qso', 'points_per_qso': 3,
+            'multiplier_type': 'none', 'special_scoring': {},
+            'county_list': [], 'allowed_bands': [], 'allowed_modes': [],
+            'required_stations': [], 'min_qso': 0, 'band_points': {}
+          }
+          q = {'c':'YO8ACR','b':'40m','m':'SSB','n':'','s':'59','r':'59',
+               'd':'2024-01-01','t':'12:00','f':'7100','ss':'001','sr':''}
+
+          assert Score.qso(q, rules) == 3, 'score per_qso fail'
+          dup, _ = Score.is_dup([q], 'YO8ACR', '40m', 'SSB')
+          assert dup == True, 'dup detection fail'
+          assert Score.unique_calls([q, {'c':'DL1ABC','b':'40m','m':'SSB'}]) == 2
+
+          # Test None guards (bug fix v19)
+          rules_none = {**rules, 'special_scoring': None, 'county_list': None}
+          assert Score.qso(q, rules_none) == 3, 'None guard fail'
+
+          adif = ADIFExporter.export([q], {'call':'YO8ACR','loc':'KN37'})
+          ri = Importer.parse_adif(adif)
+          assert ri[0]['c'] == 'YO8ACR', 'ADIF roundtrip fail'
+
+          r2 = {**rules, 'cabrillo_name':'T', 'name_en':'T', 'exchange_format':'none'}
+          cab = CabrilloExporter.export_v3(
+            [q], {'call':'YO8ACR','loc':'KN37','op_name':'','addr':'','soapbox':''}, r2)
+          assert 'START-OF-LOG: 3.0' in cab, 'cabrillo fail'
+
+          print('=== Toate testele OK (v19) ===')
+          "
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # JOB 2: Build EXE Windows
+  # ══════════════════════════════════════════════════════════════════════════
+  build-windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+    needs: test
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+          cache: "pip"
+
+      - name: Upgrade pip + instalare dependente
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller==6.3.0
+          pip install pyserial requests beautifulsoup4 pandas openpyxl
+        shell: cmd
+
+      - name: Instalare tkinterweb (optional)
+        run: pip install tkinterweb || echo "tkinterweb skip"
+        shell: cmd
+
+      - name: Metadata build
+        id: meta
+        shell: bash
+        run: |
+          DATE=$(date -u +"%Y%m%d")
+          TIME=$(date -u +"%H%M")
+          SHA="${{ github.sha }}"
+          SHA="${SHA:0:7}"
+          SUFFIX="${{ github.event.inputs.version_suffix }}"
+          if [ -n "$SUFFIX" ]; then
+            TAG="v19.0-${DATE}-${SUFFIX}"
+          else
+            TAG="v19.0-${DATE}-${TIME}"
+          fi
+          echo "tag=${TAG}"   >> $GITHUB_OUTPUT
+          echo "date=${DATE}" >> $GITHUB_OUTPUT
+          echo "sha=${SHA}"   >> $GITHUB_OUTPUT
+          echo "Tag: ${TAG}"
+
+      - name: Build EXE PyInstaller
+        shell: cmd
+        run: |
+          pyinstaller ^
+            --onefile ^
+            --windowed ^
+            --name "YO_Log_PRO_v19" ^
+            --icon "icon.ico" ^
+            --add-data "yolog\network\callbook_local.json;yolog\network" ^
+            --add-data "yolog\i18n\ro.json;yolog\i18n" ^
+            --add-data "yolog\i18n\en.json;yolog\i18n" ^
+            --add-data "README.md;." ^
+            --hidden-import yolog ^
+            --hidden-import yolog.core ^
+            --hidden-import yolog.core.score ^
+            --hidden-import yolog.core.dxcc ^
+            --hidden-import yolog.core.locator ^
+            --hidden-import yolog.core.bands ^
+            --hidden-import yolog.data ^
+            --hidden-import yolog.data.manager ^
+            --hidden-import yolog.data.importer ^
+            --hidden-import yolog.export ^
+            --hidden-import yolog.export.exporters ^
+            --hidden-import yolog.hardware ^
+            --hidden-import yolog.hardware.cat_engine ^
+            --hidden-import yolog.network ^
+            --hidden-import yolog.network.callbook ^
+            --hidden-import yolog.network.local_callbook ^
+            --hidden-import yolog.network.callbook_updater ^
+            --hidden-import yolog.ui ^
+            --hidden-import yolog.ui.app ^
+            --hidden-import yolog.ui.theme ^
+            --hidden-import yolog.i18n ^
+            --hidden-import tkinter ^
+            --hidden-import tkinter.ttk ^
+            --hidden-import tkinter.messagebox ^
+            --hidden-import tkinter.filedialog ^
+            --hidden-import tkinter.scrolledtext ^
+            --hidden-import tkinter.colorchooser ^
+            --hidden-import tkinter.font ^
+            --hidden-import serial ^
+            --hidden-import serial.tools ^
+            --hidden-import serial.tools.list_ports ^
+            --hidden-import winsound ^
+            --hidden-import webbrowser ^
+            --hidden-import requests ^
+            --hidden-import bs4 ^
+            --hidden-import bs4.builder ^
+            --hidden-import pandas ^
+            --hidden-import openpyxl ^
+            --hidden-import calendar ^
+            --collect-all yolog ^
+            --collect-all tkinter ^
+            --collect-all bs4 ^
+            --noupx ^
+            main.py
+          if errorlevel 1 ( echo "PyInstaller FAIL" && exit /b 1 )
+
+      - name: Verificare EXE
+        shell: pwsh
+        run: |
+          $f = Get-Item "dist\YO_Log_PRO_v19.exe"
+          $mb = [math]::Round($f.Length / 1MB, 1)
+          Write-Host "EXE: $($f.Name) — $mb MB"
+          if ($f.Length -lt 5MB) {
+            Write-Error "EXE prea mic ($mb MB)!"
+            exit 1
+          }
+
+      - name: Instalare NSIS
+        run: choco install nsis --no-progress -y
+        shell: cmd
+
+      - name: Build Installer NSIS
+        shell: cmd
+        run: |
+          "C:\Program Files (x86)\NSIS\makensis.exe" /V2 installer.nsi
+          if errorlevel 1 ( echo "NSIS FAIL" && exit /b 1 )
+
+      - name: Creare pachet ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "pkg" -Force | Out-Null
+          Copy-Item "YO_Log_PRO_v19_Setup.exe"  "pkg\YO_Log_PRO_v19_Setup.exe"
+          Copy-Item "dist\YO_Log_PRO_v19.exe"   "pkg\YO_Log_PRO_v19_Portabil.exe"
+          Copy-Item "README.md"                  "pkg\README.md"
+          if (Test-Path "icon.ico") { Copy-Item "icon.ico" "pkg\icon.ico" }
+          Compress-Archive -Path "pkg\*" -DestinationPath "YO_Log_PRO_v19_Windows.zip" -Force
+          Write-Host "ZIP creat OK"
+
+      - name: Upload artifact — Setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: YO_Log_PRO_v19_Setup
+          path: YO_Log_PRO_v19_Setup.exe
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload artifact — Portabil
+        uses: actions/upload-artifact@v4
+        with:
+          name: YO_Log_PRO_v19_Portabil
+          path: dist/YO_Log_PRO_v19.exe
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload artifact — ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: YO_Log_PRO_v19_Windows
+          path: YO_Log_PRO_v19_Windows.zip
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "YO Log PRO v19 — ${{ steps.meta.outputs.date }} (${{ steps.meta.outputs.sha }})"
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: |
+            YO_Log_PRO_v19_Setup.exe
+            dist/YO_Log_PRO_v19.exe
+            YO_Log_PRO_v19_Windows.zip
+          body: |
+            ## YO Log PRO v19
+
+            **Ardei Constantin-Cătălin (YO8ACR)**
+            Compatibilitate: Windows 7 SP1 / 8 / 10 / 11 (x64) — fără Python
+
+            | Fișier | Descriere |
+            |--------|-----------|
+            | `YO_Log_PRO_v19_Setup.exe` | ⭐ Installer recomandat |
+            | `YO_Log_PRO_v19_Portabil.exe` | 💼 Versiune portabilă |
+            | `YO_Log_PRO_v19_Windows.zip` | 📦 Pachet complet |
+
+            Build: `${{ steps.meta.outputs.sha }}` | Data: `${{ steps.meta.outputs.date }}`
+
+            73 de YO8ACR! 📻
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # JOB 3: Sumar
+  # ══════════════════════════════════════════════════════════════════════════
+  summary:
+    name: Sumar Build
+    runs-on: ubuntu-latest
+    needs: [test, build-windows]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Sumar
+        run: |
+          echo "## YO Log PRO v19 — Build" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Teste Python | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Windows | ${{ needs.build-windows.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "Run #${{ github.run_number }} | ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
