@@ -143,7 +143,10 @@ class CATEngine:
         self.last_mode = ""
         self.last_error = ""
         self.on_update = on_update
-        self.civ_addr  = 0x94     # Icom CI-V address
+        # CI-V address implicit 0x94 (IC-7300/IC-7610).
+        # Adrese comune: IC-735=0x04, IC-746=0x56, IC-756=0x50,
+        #                IC-7000=0x70, IC-7300=0x94, IC-7610=0x98
+        self.civ_addr  = 0x94
 
     # ─── Conectare ───────────────────────────────────────────────────────────
 
@@ -413,10 +416,11 @@ class CATEngine:
                     | ((hz // (10 ** (2 * i))) % 10)
                     for i in range(5)
                 ])
-                self._ser.write(
-                    bytes([0xFE, 0xFE, self.civ_addr, 0xE0, 0x05])
-                    + bcd + bytes([0xFD])
-                )
+                pkt = (bytes([0xFE, 0xFE, self.civ_addr, 0xE0, 0x05])
+                       + bcd + bytes([0xFD]))
+                self._ser.reset_input_buffer()
+                self._ser.write(pkt)
+                time.sleep(0.05)
                 return True
             except (serial.SerialException, ValueError) as e:
                 logger.error("Icom set_freq error: %s", e)
@@ -568,11 +572,16 @@ class CATEngine:
         if not self.connected:
             return False
         try:
-            if self.protocol == "Yaesu CAT":      return self._yaesu_set_freq(khz)
-            if self.protocol == "Icom CI-V":      return self._icom_set_freq(khz)
-            if self.protocol == "Kenwood CAT":    return self._kenwood_set_freq(khz)
-            if self.protocol == "Elecraft CAT":   return self._kenwood_set_freq(khz)
-            if self.protocol == "Hamlib/rigctld":  return self._hamlib_set_freq(khz)
+            if self.protocol == "Yaesu CAT":                return self._yaesu_set_freq(khz)
+            if self.protocol in ("Yaesu FT-847",
+                                 "Yaesu FT-100"):           return self._yaesu_set_freq(khz)
+            if self.protocol in ("Icom CI-V",
+                                 "Icom CI-V Lent"):         return self._icom_set_freq(khz)
+            if self.protocol in ("Kenwood CAT",
+                                 "Elecraft CAT",
+                                 "Ten-Tec",
+                                 "Alinco DX"):              return self._kenwood_set_freq(khz)
+            if self.protocol == "Hamlib/rigctld":           return self._hamlib_set_freq(khz)
         except Exception as e:
             logger.error("set_freq(%s) error: %s", khz, e)
         return False
@@ -582,11 +591,16 @@ class CATEngine:
         if not self.connected:
             return False
         try:
-            if self.protocol == "Yaesu CAT":      return self._yaesu_set_mode(mode)
-            if self.protocol == "Icom CI-V":      return self._icom_set_mode(mode)
-            if self.protocol == "Kenwood CAT":    return self._kenwood_set_mode(mode)
-            if self.protocol == "Elecraft CAT":   return self._kenwood_set_mode(mode)
-            if self.protocol == "Hamlib/rigctld":  return self._hamlib_set_mode(mode)
+            if self.protocol == "Yaesu CAT":                return self._yaesu_set_mode(mode)
+            if self.protocol in ("Yaesu FT-847",
+                                 "Yaesu FT-100"):           return self._yaesu_set_mode(mode)
+            if self.protocol in ("Icom CI-V",
+                                 "Icom CI-V Lent"):         return self._icom_set_mode(mode)
+            if self.protocol in ("Kenwood CAT",
+                                 "Elecraft CAT",
+                                 "Ten-Tec",
+                                 "Alinco DX"):              return self._kenwood_set_mode(mode)
+            if self.protocol == "Hamlib/rigctld":           return self._hamlib_set_mode(mode)
         except Exception as e:
             logger.error("set_mode(%s) error: %s", mode, e)
         return False

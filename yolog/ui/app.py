@@ -2141,7 +2141,8 @@ class App(tk.Tk):
                 assets = [a["name"] for a in data.get("assets", [])]
                 self.after(0, lambda: _show(tag, body, assets))
             except Exception as e:
-                self.after(0, lambda: _show_err(str(e)))
+                _emsg = str(e)
+                self.after(0, lambda m=_emsg: _show_err(m))
 
         def _show(latest_tag, notes, assets):
             d = tk.Toplevel(self)
