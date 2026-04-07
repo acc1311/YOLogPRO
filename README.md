@@ -62,7 +62,7 @@ YO Log PRO este un program complet de logare pentru radioamatori, destinat atât
 | Concurs Custom | Configurabil | Configurabil |
 
 ### 📡 Control CAT Radio
-
+- **Icom: IC-735 ✓, IC-731, IC-736, IC-737, IC-738, IC-703, IC-7760, IC-7300 MK2, IC-905, IC-705, IC-9700, toate Xiegu (G90, X5105, X6100, X6200, X108G) și multe altele — 50+ modele Icom.
 - **Yaesu CAT** — FT-991, FT-817, FT-857, FT-897, FT-847, FT-100, FT-736
 - **Icom CI-V** — IC-7300, IC-7610, IC-756, IC-746, IC-7000
 - **Kenwood CAT** — TS-590, TS-480, TS-2000, TS-990
