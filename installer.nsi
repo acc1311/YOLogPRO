@@ -74,6 +74,8 @@ Section "YO Log PRO v19" SecMain
 
     ; -- Main EXE -------------------------------------------------------------
     File "dist\YO_Log_PRO_v19.exe"
+  File /nonfatal "hamlib_bin\rigctld.exe"
+  File /nonfatal "hamlib_bin\libhamlib-4.dll"
 
     ; -- Icon -----------------------------------------------------------------
     File /nonfatal "icon.ico"

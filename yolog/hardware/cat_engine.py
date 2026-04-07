@@ -12,6 +12,9 @@ import threading
 import socket
 import time
 import logging
+import subprocess
+import sys
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -205,9 +208,146 @@ class CATEngine:
             logger.error("CAT serial connect error: %s", e)
             return False, f"Eroare port serial:\n{e}"
 
+    # ─── Hamlib rigctld auto-start ───────────────────────────────────────────
+
+    _rigctld_proc: "subprocess.Popen | None" = None  # proces rigctld gestionat de noi
+
+    @staticmethod
+    def _find_rigctld() -> str | None:
+        """Caută rigctld.exe în: lângă EXE (PyInstaller), lângă script, PATH."""
+        candidates = []
+
+        # 1. Lângă executabilul PyInstaller (sys.executable sau _MEIPASS)
+        if getattr(sys, "frozen", False):
+            base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+            candidates.append(os.path.join(base, "rigctld.exe"))
+            candidates.append(os.path.join(os.path.dirname(sys.executable), "rigctld.exe"))
+        
+        # 2. Lângă fișierul curent (rulare din sursă)
+        here = os.path.dirname(os.path.abspath(__file__))
+        for rel in ["rigctld.exe",
+                    "../../hamlib/rigctld.exe",
+                    "../../rigctld.exe",
+                    "../../../hamlib/bin/rigctld.exe"]:
+            candidates.append(os.path.normpath(os.path.join(here, rel)))
+
+        # 3. Lângă main.py
+        main_dir = os.path.dirname(sys.argv[0]) if sys.argv else "."
+        candidates.append(os.path.join(main_dir, "rigctld.exe"))
+        candidates.append(os.path.join(main_dir, "hamlib", "rigctld.exe"))
+
+        for c in candidates:
+            if os.path.isfile(c):
+                logger.info("rigctld găsit: %s", c)
+                return c
+
+        # 4. PATH sistem
+        import shutil
+        found = shutil.which("rigctld") or shutil.which("rigctld.exe")
+        if found:
+            logger.info("rigctld în PATH: %s", found)
+            return found
+
+        return None
+
+    def _start_rigctld(self, cfg: dict, port: int) -> tuple[bool, str]:
+        """
+        Pornește rigctld.exe ca subprocess dacă nu rulează deja pe portul dat.
+        Returnează (success, mesaj).
+        """
+        # Verifică dacă deja ascultă pe port
+        try:
+            test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            test.settimeout(0.5)
+            test.connect(("localhost", port))
+            test.close()
+            logger.info("rigctld deja rulează pe port %d", port)
+            return True, f"rigctld deja activ pe port {port}"
+        except (socket.error, OSError):
+            pass  # nu rulează, trebuie pornit
+
+        exe = self._find_rigctld()
+        if not exe:
+            return False, (
+                "rigctld.exe nu a fost găsit!\n\n"
+                "Plasează rigctld.exe în același folder cu YO_Log_PRO.exe\n"
+                "sau instalează Hamlib din: https://hamlib.github.io"
+            )
+
+        model_id = str(cfg.get("cat_hamlib_model", 3073))
+        com_port  = cfg.get("cat_port", "")
+        baud      = str(cfg.get("cat_baud", 9600))
+
+        cmd = [exe,
+               "-m", model_id,
+               "-t", str(port),
+               "-v"]
+
+        # Adaugă portul serial și baudrate dacă sunt configurate
+        if com_port and com_port.strip():
+            cmd += ["-r", com_port, "-s", baud]
+
+        logger.info("Pornire rigctld: %s", " ".join(cmd))
+        try:
+            # CREATE_NO_WINDOW = 0x08000000 — nu apare fereastră CMD pe Windows
+            flags = 0
+            if sys.platform == "win32":
+                flags = subprocess.CREATE_NO_WINDOW
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=flags
+            )
+            CATEngine._rigctld_proc = proc
+
+            # Așteptăm maxim 2s ca rigctld să pornească și să asculte
+            for _ in range(20):
+                time.sleep(0.1)
+                try:
+                    test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    test.settimeout(0.3)
+                    test.connect(("localhost", port))
+                    test.close()
+                    logger.info("rigctld pornit OK (PID %d)", proc.pid)
+                    return True, f"rigctld pornit (PID {proc.pid})"
+                except (socket.error, OSError):
+                    pass
+                if proc.poll() is not None:
+                    stderr_out = proc.stderr.read().decode(errors="ignore")[:300]
+                    return False, f"rigctld s-a oprit imediat:\n{stderr_out}"
+
+            return False, "rigctld pornit dar nu răspunde pe port (timeout 2s)"
+
+        except Exception as ex:
+            logger.error("Eroare pornire rigctld: %s", ex)
+            return False, f"Nu pot porni rigctld:\n{ex}"
+
+    def stop_rigctld(self):
+        """Oprește procesul rigctld pornit de noi (dacă există)."""
+        proc = CATEngine._rigctld_proc
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+                logger.info("rigctld oprit (PID %d)", proc.pid)
+            except Exception as ex:
+                logger.warning("Eroare oprire rigctld: %s", ex)
+            CATEngine._rigctld_proc = None
+
     def _connect_hamlib(self, cfg: dict) -> tuple[bool, str]:
         host = cfg.get("cat_hamlib_host", "localhost")
         port = int(cfg.get("cat_hamlib_port", 4532))
+
+        # Auto-start rigctld dacă hostul e local
+        if host in ("localhost", "127.0.0.1"):
+            ok, msg = self._start_rigctld(cfg, port)
+            if not ok:
+                self.connected = False
+                self.last_error = msg
+                return False, msg
+            logger.info("rigctld auto-start: %s", msg)
+
         try:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._sock.settimeout(3)
@@ -221,9 +361,8 @@ class CATEngine:
             self.connected = False
             self.last_error = str(e)
             logger.error("CAT Hamlib connect error: %s", e)
-            return False, (f"Eroare Hamlib:\n{e}\n\n"
-                           "Asigură-te că rigctld rulează:\n"
-                           "rigctld -m MODEL -r PORT")
+            return False, (f"Eroare conectare Hamlib:\n{e}\n\n"
+                           "Verifică: port COM corect, model corect, cablu conectat.")
 
     def _start_poll_thread(self):
         self._stop.clear()

@@ -119,7 +119,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller==6.3.0
-          pip install pyserial requests beautifulsoup4 pandas openpyxl
+          pip install pyserial requests beautifulsoup4 pandas openpyxl certifi
         shell: cmd
 
       - name: Instalare tkinterweb (optional)
@@ -144,6 +144,24 @@ jobs:
           echo "date=${DATE}" >> $GITHUB_OUTPUT
           echo "sha=${SHA}"   >> $GITHUB_OUTPUT
           echo "Tag: ${TAG}"
+
+      - name: Descarca Hamlib (rigctld.exe)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/Hamlib/Hamlib/releases/download/4.5.5/hamlib-w64-4.5.5.zip"
+          Write-Host "Descarc Hamlib..."
+          Invoke-WebRequest -Uri $url -OutFile hamlib.zip -UseBasicParsing
+          Expand-Archive hamlib.zip -DestinationPath hamlib_tmp -Force
+          $rigctld = Get-ChildItem -Recurse hamlib_tmp -Filter rigctld.exe | Select-Object -First 1
+          $libhamlib = Get-ChildItem -Recurse hamlib_tmp -Filter libhamlib*.dll | Select-Object -First 1
+          $libgcc = Get-ChildItem -Recurse hamlib_tmp -Filter libgcc*.dll | Select-Object -First 1
+          $libwinpthread = Get-ChildItem -Recurse hamlib_tmp -Filter libwinpthread*.dll | Select-Object -First 1
+          New-Item -ItemType Directory -Path hamlib_bin -Force | Out-Null
+          Copy-Item $rigctld.FullName hamlib_bin\
+          Copy-Item $libhamlib.FullName hamlib_bin\
+          if ($libgcc) { Copy-Item $libgcc.FullName hamlib_bin\ }
+          if ($libwinpthread) { Copy-Item $libwinpthread.FullName hamlib_bin\ }
+          Write-Host "Hamlib extras: $(Get-ChildItem hamlib_bin | Select-Object -ExpandProperty Name)"
 
       - name: Build EXE PyInstaller
         shell: cmd
@@ -196,6 +214,8 @@ jobs:
             --hidden-import pandas ^
             --hidden-import openpyxl ^
             --hidden-import calendar ^
+            --add-binary "hamlib_bin\\rigctld.exe;." ^
+            --add-binary "hamlib_bin\\libhamlib-4.dll;." ^
             --collect-all yolog ^
             --collect-all tkinter ^
             --collect-all bs4 ^

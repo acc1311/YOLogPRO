@@ -2129,12 +2129,24 @@ class App(tk.Tk):
 
         def _fetch():
             try:
+                import ssl as _ssl
+                # Pe Windows cu Python 3.12+ certificatele CA nu sunt
+                # instalate automat - folosim certifi daca e disponibil,
+                # altfel dezactivam verificarea doar pt request-ul de update.
+                _ctx = _ssl.create_default_context()
+                try:
+                    import certifi as _certifi
+                    _ctx.load_verify_locations(_certifi.where())
+                except ImportError:
+                    _ctx.check_hostname = False
+                    _ctx.verify_mode = _ssl.CERT_NONE
+
                 req = urllib.request.Request(
                     API_URL,
                     headers={"User-Agent": "YOLogPRO-UpdateCheck/1.0",
                              "Accept": "application/vnd.github+json"}
                 )
-                with urllib.request.urlopen(req, timeout=8) as resp:
+                with urllib.request.urlopen(req, timeout=8, context=_ctx) as resp:
                     data = _json.loads(resp.read().decode())
                 tag = data.get("tag_name", "").lstrip("v")
                 body = data.get("body", "")[:400]
@@ -2258,6 +2270,7 @@ class App(tk.Tk):
             self.cfg["win_geo"] = self.geometry()
             try:
                 self._cat.disconnect()
+                self._cat.stop_rigctld()   # opreste rigctld pornit de noi
             except Exception as e:
                 logger.debug("CAT disconnect on exit: %s", e)
             self._dm.save_log(self._cid(), self.log)
